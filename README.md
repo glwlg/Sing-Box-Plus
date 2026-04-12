@@ -9,8 +9,11 @@
 * ✅ 分享链接分组打印（直连 9 / WARP 9），导入即用
 * ✅ WARP 节点，将服务器 IP“变身”为 Cloudflare 的中性出口，Gemini/Netflix/Disney+/YouTube 等流媒体解锁
 
-**🔔 2026年3月26日更新提醒：** 脚本已更新v4.4.0，支持 **sing-box v1.13.x** 
+**🔔 2026年3月26日更新提醒：** 脚本已更新v4.4.0，支持 **sing-box v1.13.x** ,若您已经安装了旧脚本，请先卸载后更新或重装脚本。也可使用以下命令进行卸载：
 
+systemctl stop sing-box
+rm -rf /usr/local/bin/sing-box
+rm -rf /var/lib/sing-box-plus
 
 ---
 
