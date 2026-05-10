@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 #  Sing-Box-Plus 管理脚本（20 节点：直连 10 + WARP 10）
-#  Version: v4.6.0
+#  Version: v4.6.1
 #  author：Alvin9999
 #  Repo: https://github.com/Alvin9999-newpac/Sing-Box-Plus
 # ============================================================
@@ -286,7 +286,7 @@ ENABLE_ANYTLS=${ENABLE_ANYTLS:-true}
 
 # 常量
 SCRIPT_NAME="Sing-Box-Plus 管理脚本"
-SCRIPT_VERSION="v4.6.0"
+SCRIPT_VERSION="v4.6.1"
 REALITY_SERVER=${REALITY_SERVER:-www.microsoft.com}
 REALITY_SERVER_PORT=${REALITY_SERVER_PORT:-443}
 GRPC_SERVICE=${GRPC_SERVICE:-grpc}
@@ -1084,6 +1084,8 @@ open_firewall(){
 # ===== 分享链接（分组输出 + 提示） =====
 print_links_grouped(){
   load_env; load_creds; load_ports
+  ensure_dirs
+  mk_cert    # 确保 CRT_SHA256 已赋值（pinnedPeerCertSha256 节点需要）
   local mode="${1:-4}" ip host
   if [[ "$mode" == "6" ]]; then
     ip="$(get_ip6)"
