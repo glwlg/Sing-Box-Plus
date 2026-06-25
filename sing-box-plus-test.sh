@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 #  Sing-Box-Plus 管理脚本（20 节点：直连 10 + WARP 10）
-#  Version: v4.6.0
+#  Version: v4.7.0
 #  author：Alvin9999
 #  Repo: https://github.com/Alvin9999-newpac/Sing-Box-Plus
 # ============================================================
@@ -286,9 +286,12 @@ ENABLE_ANYTLS=${ENABLE_ANYTLS:-true}
 
 # 常量
 SCRIPT_NAME="Sing-Box-Plus 管理脚本"
-SCRIPT_VERSION="v4.6.0"
+SCRIPT_VERSION="v4.7.0"
 REALITY_SERVER=${REALITY_SERVER:-www.microsoft.com}
 REALITY_SERVER_PORT=${REALITY_SERVER_PORT:-443}
+# REALITY 偷域名池：每个 reality inbound 安装时各自随机抽一个，抽中后写入 creds.env 持久化，
+# 重启/重装不会变（不会让旧客户端链接失效）。空格分隔，全部需满足 TLS1.3 + H2、不重定向、未被墙。
+REALITY_SERVERS=${REALITY_SERVERS:-"swift.org yahoo.com www.yahoo.com addons.mozilla.org lovelive-anime.jp www.lovelive-anime.jp one-piece.com www.one-piece.com www.microsoft.com www.apple.com gateway.icloud.com"}
 GRPC_SERVICE=${GRPC_SERVICE:-grpc}
 VMESS_WS_PATH=${VMESS_WS_PATH:-/vm}
 
@@ -501,6 +504,12 @@ SS_PWD=$SS_PWD
 TUIC_UUID=$TUIC_UUID
 TUIC_PWD=$TUIC_PWD
 ANYTLS_PWD=$ANYTLS_PWD
+RS_VR=$RS_VR
+RS_GR=$RS_GR
+RS_TR=$RS_TR
+RS_VRW=$RS_VRW
+RS_GRW=$RS_GRW
+RS_TRW=$RS_TRW
 EOF
 }
 load_creds(){ safe_source_env "$SB_DIR/creds.env" || return 1; }
@@ -529,6 +538,13 @@ rand_hex8(){
   fi
 }
 rand_b64_32(){ openssl rand -base64 32 | tr -d "\n"; }
+
+# 从 REALITY_SERVERS 池里随机抽一个域名（池为空则回退到 REALITY_SERVER）
+pick_reality(){
+  local arr=($REALITY_SERVERS); local n=${#arr[@]}
+  (( n == 0 )) && { printf '%s' "$REALITY_SERVER"; return; }
+  printf '%s' "${arr[$((RANDOM % n))]}"
+}
 
 gen_uuid(){
   local u=""
@@ -566,6 +582,13 @@ ensure_creds(){
   [[ -z "${SS_PWD:-}" ]] && SS_PWD=$(openssl rand -base64 24 | tr -d "=\n" | tr "+/" "-_")
   TUIC_UUID="$UUID"; TUIC_PWD="$UUID"
   [[ -z "${ANYTLS_PWD:-}" ]] && ANYTLS_PWD=$(rand_b64_32)
+  # 每个 reality inbound 独立随机偷一个域名（首次安装抽取后持久化）
+  [[ -z "${RS_VR:-}"  ]] && RS_VR=$(pick_reality)    # vless-reality
+  [[ -z "${RS_GR:-}"  ]] && RS_GR=$(pick_reality)    # vless-grpc-reality
+  [[ -z "${RS_TR:-}"  ]] && RS_TR=$(pick_reality)    # trojan-reality
+  [[ -z "${RS_VRW:-}" ]] && RS_VRW=$(pick_reality)   # vless-reality-warp
+  [[ -z "${RS_GRW:-}" ]] && RS_GRW=$(pick_reality)   # vless-grpc-reality-warp
+  [[ -z "${RS_TRW:-}" ]] && RS_TRW=$(pick_reality)   # trojan-reality-warp
   save_creds
 }
 
@@ -953,6 +976,8 @@ write_config(){
   --arg RS "$REALITY_SERVER" --argjson RSP "${REALITY_SERVER_PORT:-443}" --arg UID "$UUID" \
   --arg WSHOST "$WARP_SOCKS_HOST" --argjson WSPORT "$WARP_SOCKS_PORT" \
   --arg RPR "$REALITY_PRIV" --arg RPB "$REALITY_PUB" --arg SID "$REALITY_SID" \
+  --arg RS_VR "$RS_VR" --arg RS_GR "$RS_GR" --arg RS_TR "$RS_TR" \
+  --arg RS_VRW "$RS_VRW" --arg RS_GRW "$RS_GRW" --arg RS_TRW "$RS_TRW" \
   --arg HY2 "$HY2_PWD" --arg HY22 "$HY2_PWD2" --arg HY2O "$HY2_OBFS_PWD" \
   --arg GRPC "$GRPC_SERVICE" --arg VMWS "$VMESS_WS_PATH" --arg CRT "$CRT" --arg KEY "$KEY" \
   --arg SS2022 "$SS2022_KEY" --arg SSPWD "$SS_PWD" --arg TUICUUID "$TUIC_UUID" --arg TUICPWD "$TUIC_PWD" --arg ANYTLSPWD "$ANYTLS_PWD" \
@@ -968,9 +993,9 @@ write_config(){
   --arg W4 "${WARP_ADDRESS_V4:-}" --arg W6 "${WARP_ADDRESS_V6:-}" \
   --argjson WR1 "${WARP_RESERVED_1:-0}" --argjson WR2 "${WARP_RESERVED_2:-0}" --argjson WR3 "${WARP_RESERVED_3:-0}" \
   '
-  def inbound_vless($port): {type:"vless", listen:"::", listen_port:$port, users:[{uuid:$UID}], tls:{enabled:true, server_name:$RS, reality:{enabled:true, handshake:{server:$RS, server_port:$RSP}, private_key:$RPR, short_id:[$SID]}}};
-  def inbound_vless_flow($port): {type:"vless", listen:"::", listen_port:$port, users:[{uuid:$UID, flow:"xtls-rprx-vision"}], tls:{enabled:true, server_name:$RS, reality:{enabled:true, handshake:{server:$RS, server_port:$RSP}, private_key:$RPR, short_id:[$SID]}}};
-  def inbound_trojan($port): {type:"trojan", listen:"::", listen_port:$port, users:[{password:$UID}], tls:{enabled:true, server_name:$RS, reality:{enabled:true, handshake:{server:$RS, server_port:$RSP}, private_key:$RPR, short_id:[$SID]}}};
+  def inbound_vless($port; $rs): {type:"vless", listen:"::", listen_port:$port, users:[{uuid:$UID}], tls:{enabled:true, server_name:$rs, reality:{enabled:true, handshake:{server:$rs, server_port:$RSP}, private_key:$RPR, short_id:[$SID]}}};
+  def inbound_vless_flow($port; $rs): {type:"vless", listen:"::", listen_port:$port, users:[{uuid:$UID, flow:"xtls-rprx-vision"}], tls:{enabled:true, server_name:$rs, reality:{enabled:true, handshake:{server:$rs, server_port:$RSP}, private_key:$RPR, short_id:[$SID]}}};
+  def inbound_trojan($port; $rs): {type:"trojan", listen:"::", listen_port:$port, users:[{password:$UID}], tls:{enabled:true, server_name:$rs, reality:{enabled:true, handshake:{server:$rs, server_port:$RSP}, private_key:$RPR, short_id:[$SID]}}};
   def inbound_hy2($port): {type:"hysteria2", listen:"::", listen_port:$port, users:[{name:"hy2", password:$HY2}], tls:{enabled:true, certificate_path:$CRT, key_path:$KEY}};
   def inbound_vmess_ws($port): {type:"vmess", listen:"::", listen_port:$port, users:[{uuid:$UID}], transport:{type:"ws", path:$VMWS}};
   def inbound_hy2_obfs($port): {type:"hysteria2", listen:"::", listen_port:$port, users:[{name:"hy2", password:$HY22}], obfs:{type:"salamander", password:$HY2O}, tls:{enabled:true, certificate_path:$CRT, key_path:$KEY, alpn:["h3"]}};
@@ -987,9 +1012,9 @@ write_config(){
     log:{level:"info", timestamp:true},
   dns:{ servers:[ {type:"https", tag:"dns-remote", server:"1.1.1.1", server_port:443, path:"/dns-query"}, {type:"udp", tag:"dns-local", server:"8.8.8.8"} ], strategy:"prefer_ipv4" },
   inbounds:[
-      (inbound_vless_flow($P1) + {tag:"vless-reality"}),
-      (inbound_vless($P2) + {tag:"vless-grpcr", transport:{type:"grpc", service_name:$GRPC}}),
-      (inbound_trojan($P3) + {tag:"trojan-reality"}),
+      (inbound_vless_flow($P1; $RS_VR) + {tag:"vless-reality"}),
+      (inbound_vless($P2; $RS_GR) + {tag:"vless-grpcr", transport:{type:"grpc", service_name:$GRPC}}),
+      (inbound_trojan($P3; $RS_TR) + {tag:"trojan-reality"}),
       (inbound_hy2($P4) + {tag:"hy2"}),
       (inbound_vmess_ws($P5) + {tag:"vmess-ws"}),
       (inbound_hy2_obfs($P6) + {tag:"hy2-obfs"}),
@@ -998,9 +1023,9 @@ write_config(){
       (inbound_tuic($P9) + {tag:"tuic-v5"}),
       (inbound_anytls($P10) + {tag:"anytls"}),
 
-      (inbound_vless_flow($PW1) + {tag:"vless-reality-warp"}),
-      (inbound_vless($PW2) + {tag:"vless-grpcr-warp", transport:{type:"grpc", service_name:$GRPC}}),
-      (inbound_trojan($PW3) + {tag:"trojan-reality-warp"}),
+      (inbound_vless_flow($PW1; $RS_VRW) + {tag:"vless-reality-warp"}),
+      (inbound_vless($PW2; $RS_GRW) + {tag:"vless-grpcr-warp", transport:{type:"grpc", service_name:$GRPC}}),
+      (inbound_trojan($PW3; $RS_TRW) + {tag:"trojan-reality-warp"}),
       (inbound_hy2($PW4) + {tag:"hy2-warp"}),
       (inbound_vmess_ws($PW5) + {tag:"vmess-ws-warp"}),
       (inbound_hy2_obfs($PW6) + {tag:"hy2-obfs-warp"}),
@@ -1084,6 +1109,8 @@ open_firewall(){
 # ===== 分享链接（分组输出 + 提示） =====
 print_links_grouped(){
   load_env; load_creds; load_ports
+  ensure_dirs
+  mk_cert    # 确保 CRT_SHA256 已赋值（pinnedPeerCertSha256 节点需要）
   local mode="${1:-4}" ip host
   if [[ "$mode" == "6" ]]; then
     ip="$(get_ip6)"
@@ -1098,9 +1125,9 @@ print_links_grouped(){
   host="$(fmt_host_for_uri "$ip")"
   local links_direct=() links_warp=()
   # 直连9
-  links_direct+=("vless://${UUID}@${host}:${PORT_VLESSR}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SERVER}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#vless-reality")
-  links_direct+=("vless://${UUID}@${host}:${PORT_VLESS_GRPCR}?encryption=none&security=reality&sni=${REALITY_SERVER}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=grpc&serviceName=${GRPC_SERVICE}#vless-grpc-reality")
-  links_direct+=("trojan://${UUID}@${host}:${PORT_TROJANR}?security=reality&sni=${REALITY_SERVER}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#trojan-reality")
+  links_direct+=("vless://${UUID}@${host}:${PORT_VLESSR}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${RS_VR}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#vless-reality")
+  links_direct+=("vless://${UUID}@${host}:${PORT_VLESS_GRPCR}?encryption=none&security=reality&sni=${RS_GR}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=grpc&serviceName=${GRPC_SERVICE}#vless-grpc-reality")
+  links_direct+=("trojan://${UUID}@${host}:${PORT_TROJANR}?security=reality&sni=${RS_TR}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#trojan-reality")
   links_direct+=("hy2://$(urlenc "${HY2_PWD}")@${host}:${PORT_HY2}?insecure=1&allowInsecure=1&sni=${REALITY_SERVER}#hysteria2")
   local VMESS_JSON; VMESS_JSON=$(cat <<JSON
 {"v":"2","ps":"vmess-ws","add":"${ip}","port":"${PORT_VMESS_WS}","id":"${UUID}","aid":"0","net":"ws","type":"none","host":"","path":"${VMESS_WS_PATH}","tls":""}
@@ -1114,9 +1141,9 @@ JSON
   links_direct+=("anytls://$(urlenc "${ANYTLS_PWD}")@${host}:${PORT_ANYTLS}?insecure=1&sni=${REALITY_SERVER}#anytls")
 
   # WARP 9
-  links_warp+=("vless://${UUID}@${host}:${PORT_VLESSR_W}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SERVER}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#vless-reality-warp")
-  links_warp+=("vless://${UUID}@${host}:${PORT_VLESS_GRPCR_W}?encryption=none&security=reality&sni=${REALITY_SERVER}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=grpc&serviceName=${GRPC_SERVICE}#vless-grpc-reality-warp")
-  links_warp+=("trojan://${UUID}@${host}:${PORT_TROJANR_W}?security=reality&sni=${REALITY_SERVER}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#trojan-reality-warp")
+  links_warp+=("vless://${UUID}@${host}:${PORT_VLESSR_W}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${RS_VRW}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#vless-reality-warp")
+  links_warp+=("vless://${UUID}@${host}:${PORT_VLESS_GRPCR_W}?encryption=none&security=reality&sni=${RS_GRW}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=grpc&serviceName=${GRPC_SERVICE}#vless-grpc-reality-warp")
+  links_warp+=("trojan://${UUID}@${host}:${PORT_TROJANR_W}?security=reality&sni=${RS_TRW}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#trojan-reality-warp")
   links_warp+=("hy2://$(urlenc "${HY2_PWD}")@${host}:${PORT_HY2_W}?insecure=1&allowInsecure=1&sni=${REALITY_SERVER}#hysteria2-warp")
   local VMESS_JSON_W; VMESS_JSON_W=$(cat <<JSON
 {"v":"2","ps":"vmess-ws-warp","add":"${ip}","port":"${PORT_VMESS_WS_W}","id":"${UUID}","aid":"0","net":"ws","type":"none","host":"","path":"${VMESS_WS_PATH}","tls":""}
@@ -1138,7 +1165,7 @@ echo -e "${C_BLUE}${C_BOLD}分享链接（20 个）${C_RESET}"
   echo -e "${C_DIM}说明：带 -warp 的 10 个节点走 Cloudflare WARP 出口，流媒体解锁更友好${C_RESET}"
   for l in "${links_warp[@]}"; do echo "  $l"; done
   hr
-  echo -e "${C_YELLOW}📌 如果你使用 Xray-core v26.2.6+，hysteria2 节点的 allowInsecure 已被移除，${C_RESET}"
+  echo -e "${C_YELLOW}📌 如果你使用 v2rayN/Xray-core v26.2.6+，hysteria2 节点的 allowInsecure 已被移除，${C_RESET}"
   echo -e "${C_YELLOW}   请改用以下 pinnedPeerCertSha256 节点：${C_RESET}"
   echo "  hy2://$(urlenc "${HY2_PWD}")@${host}:${PORT_HY2}?sni=${REALITY_SERVER}&pcs=${CRT_SHA256}#hysteria2-pinnedPeerCertSha256"
   echo "  hy2://$(urlenc "${HY2_PWD}")@${host}:${PORT_HY2_W}?sni=${REALITY_SERVER}&pcs=${CRT_SHA256}#hysteria2-warp-pinnedPeerCertSha256"
