@@ -620,7 +620,7 @@ gen_reality(){ "$BIN_PATH" generate reality-keypair; }
 cert_fingerprint_sha256(){
   local cert="$1"
   openssl x509 -in "$cert" -fingerprint -sha256 -noout 2>/dev/null \
-    | sed 's/SHA256 Fingerprint=//;s/://g' | tr 'A-F' 'a-f' || true
+    | sed -E 's/^[^=]*=//;s/://g' | tr 'A-F' 'a-f' || true
 }
 
 mk_cert(){
@@ -973,8 +973,12 @@ install_web_deps(){
   fi
 }
 
+nginx_includes_sites_enabled(){
+  grep -RqsE 'include[[:space:]]+[^;]*sites-enabled' /etc/nginx/nginx.conf /etc/nginx/conf.d 2>/dev/null
+}
+
 nginx_conf_path(){
-  if [[ -d /etc/nginx/sites-available ]]; then
+  if [[ -d /etc/nginx/sites-available && -d /etc/nginx/sites-enabled ]] && nginx_includes_sites_enabled; then
     printf '%s' /etc/nginx/sites-available/sing-box-plus.conf
   else
     mkdir -p /etc/nginx/conf.d
@@ -984,9 +988,32 @@ nginx_conf_path(){
 
 enable_nginx_conf(){
   local conf="$1"
-  if [[ -d /etc/nginx/sites-enabled ]]; then
+  if [[ "$conf" == /etc/nginx/sites-available/* && -d /etc/nginx/sites-enabled ]]; then
     ln -sf "$conf" /etc/nginx/sites-enabled/sing-box-plus.conf
   fi
+}
+
+disable_conflicting_sbp_domain_configs(){
+  [[ -n "${WEB_DOMAIN:-}" ]] || return 0
+  local d f bak ts current found=0
+  current="$(nginx_conf_path)"
+  ts="$(date +%Y%m%d%H%M%S 2>/dev/null || echo manual)"
+  for d in /etc/nginx/conf.d /etc/nginx/sites-enabled; do
+    [[ -d "$d" ]] || continue
+    while IFS= read -r f; do
+      [[ -n "$f" && ( -f "$f" || -L "$f" ) ]] || continue
+      [[ "$(readlink -f "$f" 2>/dev/null || printf '%s' "$f")" == "$(readlink -f "$current" 2>/dev/null || printf '%s' "$current")" ]] && continue
+      grep -qE '^[[:space:]]*server_name[[:space:]]' "$f" 2>/dev/null || continue
+      grep -qF "$WEB_DOMAIN" "$f" 2>/dev/null || continue
+      grep -qE 'checkPort|listen[[:space:]][^;]*443|ssl_certificate(_key)?[[:space:]]+/opt/sing-box/certs?/' "$f" 2>/dev/null || continue
+      bak="${f}.disabled-by-sing-box-plus.${ts}"
+      if mv "$f" "$bak" 2>/dev/null; then
+        warn "已隔离同域名旧 nginx 配置：$f -> $bak"
+        found=1
+      fi
+    done < <(grep -RIl "server_name" "$d" 2>/dev/null || true)
+  done
+  [[ "$found" == "1" ]]
 }
 
 disable_stale_sbp_nginx_configs(){
@@ -1152,6 +1179,7 @@ EOF
   fi
 
   enable_nginx_conf "$conf"
+  disable_conflicting_sbp_domain_configs || true
 }
 
 reload_nginx(){
@@ -1178,8 +1206,17 @@ reload_nginx(){
   fi
 }
 
+disable_stale_cf_origin_443_rule(){
+  command -v iptables >/dev/null 2>&1 || return 0
+  if iptables -C INPUT -p tcp --dport 443 -j CF_ORIGIN_VJ 2>/dev/null; then
+    while iptables -D INPUT -p tcp --dport 443 -j CF_ORIGIN_VJ 2>/dev/null; do :; done
+    warn "已移除旧 Cloudflare-only 443 防火墙规则：CF_ORIGIN_VJ"
+  fi
+}
+
 open_web_firewall(){
   local r p
+  disable_stale_cf_origin_443_rule
   for r in 80/tcp 443/tcp; do
     p="${r%/*}"
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q -E "active|活跃"; then
@@ -1224,6 +1261,7 @@ setup_web(){
   open_web_firewall
   reload_nginx || true
   request_certificate
+  open_web_firewall
   write_nginx_config
   reload_nginx || true
   save_env
