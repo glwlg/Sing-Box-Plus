@@ -1112,6 +1112,7 @@ write_nginx_config(){
   conf="$(nginx_conf_path)"
   le_crt="/etc/letsencrypt/live/${WEB_DOMAIN}/fullchain.pem"
   le_key="/etc/letsencrypt/live/${WEB_DOMAIN}/privkey.pem"
+  mkdir -p /etc/nginx/sing-box-plus.locations
 
   if [[ -s "$le_crt" && -s "$le_key" ]]; then
     cat > "$conf" <<EOF
@@ -1140,6 +1141,7 @@ server {
     ssl_certificate ${le_crt};
     ssl_certificate_key ${le_key};
     ssl_protocols TLSv1.2 TLSv1.3;
+    include /etc/nginx/sing-box-plus.locations/*.conf;
 
     location = /sub/${SUB_TOKEN} {
         default_type text/plain;
