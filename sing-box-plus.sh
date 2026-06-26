@@ -478,7 +478,9 @@ PORT_HY2_OBFS=""; PORT_SS2022=""; PORT_SS=""; PORT_TUIC=""; PORT_ANYTLS=""
 PORT_VLESSR_W=""; PORT_VLESS_GRPCR_W=""; PORT_TROJANR_W=""; PORT_HY2_W=""; PORT_VMESS_WS_W=""
 PORT_HY2_OBFS_W=""; PORT_SS2022_W=""; PORT_SS_W=""; PORT_TUIC_W=""; PORT_ANYTLS_W=""
 
-save_ports(){ cat > "$SB_DIR/ports.env" <<EOF
+save_ports(){
+  mkdir -p "$SB_DIR"
+  cat > "$SB_DIR/ports.env" <<EOF
 PORT_VLESSR=$PORT_VLESSR
 PORT_VLESS_GRPCR=$PORT_VLESS_GRPCR
 PORT_TROJANR=$PORT_TROJANR
@@ -535,6 +537,7 @@ save_all_ports(){
 # ===== env / creds / warp =====
 save_env_line(){ printf '%s=%q\n' "$1" "${!1:-}"; }
 save_env(){
+  mkdir -p "$SB_DIR"
   {
     save_env_line BIN_PATH
     save_env_line ENABLE_VLESS_REALITY
@@ -560,7 +563,9 @@ save_env(){
 }
 load_env(){ safe_source_env "$SB_DIR/env.conf" || true; }
 
-save_creds(){ cat > "$SB_DIR/creds.env" <<EOF
+save_creds(){
+  mkdir -p "$SB_DIR"
+  cat > "$SB_DIR/creds.env" <<EOF
 UUID=$UUID
 HY2_PWD=$HY2_PWD
 REALITY_PRIV=$REALITY_PRIV
@@ -577,7 +582,9 @@ EOF
 }
 load_creds(){ safe_source_env "$SB_DIR/creds.env" || return 1; }
 
-save_warp(){ cat > "$SB_DIR/warp.env" <<EOF
+save_warp(){
+  mkdir -p "$SB_DIR"
+  cat > "$SB_DIR/warp.env" <<EOF
 WARP_PRIVATE_KEY=$WARP_PRIVATE_KEY
 WARP_PEER_PUBLIC_KEY=$WARP_PEER_PUBLIC_KEY
 WARP_ENDPOINT_HOST=$WARP_ENDPOINT_HOST
@@ -1801,6 +1808,14 @@ configure_protocol_selection(){
 }
 
 configure_install_options(){
+  if [[ "$EUID" -ne 0 ]]; then
+    warn "请以 root 运行（或 sudo）后再安装/配置"
+    return 1
+  fi
+  if ! ensure_dirs; then
+    err "无法创建工作目录：$SB_DIR"
+    return 1
+  fi
   load_env || true
   local ans
   hr
@@ -1934,7 +1949,11 @@ menu(){
   read -rp "选择: " op || true
   case "${op:-}" in
   1)
-  configure_install_options
+  if ! configure_install_options; then
+    read -rp "回车返回..." _ || true
+    menu
+    return 0
+  fi
   sbp_bootstrap                                     # 依赖/二进制回退
   set +e                                            # ← 关闭严格退出，避免中途被杀掉
   echo -e "${C_BLUE}[信息] 正在检查 sing-box 安装状态...${C_RESET}"
@@ -1957,7 +1976,11 @@ menu(){
    4) if ensure_installed_or_hint; then rotate_ports; fi; menu ;;
     5) enable_bbr; read -rp "回车返回..." _ || true; menu ;;
     7)
-      configure_install_options
+      if ! configure_install_options; then
+        read -rp "回车返回..." _ || true
+        menu
+        return 0
+      fi
       if ensure_installed_or_hint; then
         setup_web || true
         write_config || { echo "[ERR] 生成配置失败"; }
