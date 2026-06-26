@@ -989,6 +989,23 @@ enable_nginx_conf(){
   fi
 }
 
+disable_stale_sbp_nginx_configs(){
+  local d f bak ts found=0
+  ts="$(date +%Y%m%d%H%M%S 2>/dev/null || echo manual)"
+  for d in /etc/nginx/conf.d /etc/nginx/sites-enabled; do
+    [[ -d "$d" ]] || continue
+    while IFS= read -r f; do
+      [[ -n "$f" && ( -f "$f" || -L "$f" ) ]] || continue
+      bak="${f}.disabled-by-sing-box-plus.${ts}"
+      if mv "$f" "$bak" 2>/dev/null; then
+        warn "已隔离旧 nginx 配置：$f -> $bak"
+        found=1
+      fi
+    done < <(grep -RIlE 'ssl_certificate(_key)?[[:space:]]+/opt/sing-box/certs?/' "$d" 2>/dev/null || true)
+  done
+  [[ "$found" == "1" ]]
+}
+
 write_demo_site(){
   mkdir -p "$WEB_ROOT/sub" "$WEB_ROOT/.well-known/acme-challenge"
   cat > "$WEB_ROOT/index.html" <<'HTML'
@@ -1138,8 +1155,21 @@ EOF
 }
 
 reload_nginx(){
+  local out
   command -v nginx >/dev/null 2>&1 || { warn "nginx 未安装，已跳过 Web 站点配置"; return 1; }
-  nginx -t >/dev/null 2>&1 || { warn "nginx 配置检查失败，请查看 nginx -t 输出"; return 1; }
+  if ! out="$(nginx -t 2>&1)"; then
+    warn "nginx 配置检查失败："
+    printf '%s\n' "$out" >&2
+    if disable_stale_sbp_nginx_configs; then
+      if ! out="$(nginx -t 2>&1)"; then
+        warn "隔离旧配置后 nginx 仍未通过检查："
+        printf '%s\n' "$out" >&2
+        return 1
+      fi
+    else
+      return 1
+    fi
+  fi
   if command -v systemctl >/dev/null 2>&1; then
     systemctl enable --now nginx >/dev/null 2>&1 || true
     systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1 || true
