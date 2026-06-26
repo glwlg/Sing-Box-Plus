@@ -8,7 +8,6 @@
 
 set -Eeuo pipefail
 
-stty erase ^H 2>/dev/null || true # 让退格键在终端里正常工作
 # ===== [BEGIN] SBP 引导模块 v2.2.0+（包管理器优先 + 二进制回退） =====
 # 模式与哨兵
 : "${SBP_SOFT:=0}"                               # 1=宽松模式（失败尽量继续），默认 0=严格
