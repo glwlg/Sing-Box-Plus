@@ -287,7 +287,7 @@ ENABLE_ANYTLS=${ENABLE_ANYTLS:-true}
 
 # 常量
 SCRIPT_NAME="Sing-Box-Plus 管理脚本"
-SCRIPT_VERSION="v4.7.2"
+SCRIPT_VERSION="v4.7.3"
 REALITY_SERVER=${REALITY_SERVER:-www.tesla.com}
 REALITY_SERVER_PORT=${REALITY_SERVER_PORT:-443}
 GRPC_SERVICE=${GRPC_SERVICE:-grpc}
@@ -1115,8 +1115,6 @@ JSON
   cat > "$WEB_ROOT/robots.txt" <<EOF
 User-agent: *
 Allow: /
-Disallow: /sub/
-Disallow: /proxy/
 
 Sitemap: https://${site_url}/sitemap.xml
 EOF
