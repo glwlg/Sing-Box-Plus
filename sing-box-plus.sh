@@ -271,6 +271,9 @@ CERT_DIR=${CERT_DIR:-$SB_DIR/cert}
 WGCF_DIR=${WGCF_DIR:-$SB_DIR/wgcf}
 WEB_ROOT=${WEB_ROOT:-/var/www/sing-box-plus}
 FIREWALL_RULES_FILE=${FIREWALL_RULES_FILE:-$SB_DIR/firewall.rules}
+BACKUP_DIR=${BACKUP_DIR:-$SB_DIR/backups}
+TOKEN_GRACE_MINUTES=${TOKEN_GRACE_MINUTES:-20}
+NGINX_SENSITIVE_LOG=${NGINX_SENSITIVE_LOG:-/var/log/nginx/sing-box-plus-sensitive.log}
 
 # 功能开关（保持稳定默认）
 ENABLE_WARP=${ENABLE_WARP:-true}
@@ -287,7 +290,7 @@ ENABLE_ANYTLS=${ENABLE_ANYTLS:-true}
 
 # 常量
 SCRIPT_NAME="Sing-Box-Plus 管理脚本"
-SCRIPT_VERSION="v4.7.3"
+SCRIPT_VERSION="v4.7.4"
 REALITY_SERVER=${REALITY_SERVER:-www.tesla.com}
 REALITY_SERVER_PORT=${REALITY_SERVER_PORT:-443}
 GRPC_SERVICE=${GRPC_SERVICE:-grpc}
@@ -459,7 +462,25 @@ fmt_host_for_uri(){
 
 is_uuid(){ [[ "$1" =~ ^[0-9a-fA-F-]{36}$ ]]; }
 
-ensure_dirs(){ mkdir -p "$SB_DIR" "$DATA_DIR" "$CERT_DIR" "$WGCF_DIR"; }
+ensure_dirs(){ mkdir -p "$SB_DIR" "$DATA_DIR" "$CERT_DIR" "$WGCF_DIR" "$BACKUP_DIR"; }
+
+backup_file(){
+  local file="$1" label="${2:-file}" dir ts old
+  [[ -e "$file" ]] || return 0
+  dir="$BACKUP_DIR/$label"
+  ts="$(date +%Y%m%d%H%M%S 2>/dev/null || echo manual)"
+  mkdir -p "$dir"
+  cp -a "$file" "$dir/${ts}.bak" 2>/dev/null || return 0
+  mapfile -t old < <(ls -1t "$dir"/*.bak 2>/dev/null | tail -n +6 || true)
+  for file in "${old[@]}"; do rm -f "$file"; done
+}
+
+restore_latest_backup(){
+  local label="$1" dest="$2" latest
+  latest="$(ls -1t "$BACKUP_DIR/$label"/*.bak 2>/dev/null | head -n1 || true)"
+  [[ -n "$latest" && -e "$latest" ]] || return 1
+  cp -a "$latest" "$dest"
+}
 
 # ===== 端口（20 个互不重复） =====
 PORTS=()
@@ -977,6 +998,32 @@ nginx_includes_sites_enabled(){
   grep -RqsE 'include[[:space:]]+[^;]*sites-enabled' /etc/nginx/nginx.conf /etc/nginx/conf.d 2>/dev/null
 }
 
+nginx_includes_conf_d(){
+  grep -RqsE 'include[[:space:]]+[^;]*conf\.d/\*\.conf' /etc/nginx/nginx.conf 2>/dev/null
+}
+
+nginx_supports_http2_on(){
+  local ver major minor patch
+  command -v nginx >/dev/null 2>&1 || return 1
+  ver="$(nginx -v 2>&1 | sed -nE 's|.*nginx/([0-9]+)\.([0-9]+)\.([0-9]+).*|\1 \2 \3|p')"
+  [[ -n "$ver" ]] || return 1
+  read -r major minor patch <<< "$ver"
+  (( major > 1 )) && return 0
+  (( major == 1 && minor > 25 )) && return 0
+  (( major == 1 && minor == 25 && patch >= 1 )) && return 0
+  return 1
+}
+
+write_nginx_rate_limit_conf(){
+  [[ -d /etc/nginx/conf.d ]] || return 1
+  nginx_includes_conf_d || return 1
+  rm -f /etc/nginx/conf.d/sing-box-plus-rate-limit.conf 2>/dev/null || true
+  cat > /etc/nginx/conf.d/00-sing-box-plus-rate-limit.conf <<'EOF'
+limit_req_zone $binary_remote_addr zone=sbp_sensitive:10m rate=30r/m;
+EOF
+  return 0
+}
+
 nginx_conf_path(){
   if [[ -d /etc/nginx/sites-available && -d /etc/nginx/sites-enabled ]] && nginx_includes_sites_enabled; then
     printf '%s' /etc/nginx/sites-available/sing-box-plus.conf
@@ -1325,11 +1372,26 @@ HTML
 write_nginx_config(){
   [[ -n "${WEB_DOMAIN:-}" ]] || return 0
   ensure_sub_token
-  local conf le_crt le_key
+  local conf le_crt le_key listen443 listen443v6 http2_line rate_limit_line
   conf="$(nginx_conf_path)"
   le_crt="/etc/letsencrypt/live/${WEB_DOMAIN}/fullchain.pem"
   le_key="/etc/letsencrypt/live/${WEB_DOMAIN}/privkey.pem"
   mkdir -p /etc/nginx/sing-box-plus.locations
+  backup_file "$conf" nginx-conf
+
+  listen443="listen 443 ssl http2;"
+  listen443v6="listen [::]:443 ssl http2;"
+  http2_line=""
+  if nginx_supports_http2_on; then
+    listen443="listen 443 ssl;"
+    listen443v6="listen [::]:443 ssl;"
+    http2_line="    http2 on;"
+  fi
+
+  rate_limit_line=""
+  if write_nginx_rate_limit_conf; then
+    rate_limit_line="        limit_req zone=sbp_sensitive burst=20 nodelay;"
+  fi
 
   if [[ -s "$le_crt" && -s "$le_key" ]]; then
     cat > "$conf" <<EOF
@@ -1350,8 +1412,9 @@ server {
 }
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    ${listen443}
+    ${listen443v6}
+${http2_line}
     server_name ${WEB_DOMAIN};
     root ${WEB_ROOT};
     index index.html;
@@ -1364,6 +1427,8 @@ server {
 
     location = /sub/${SUB_TOKEN} {
         access_log off;
+        error_log ${NGINX_SENSITIVE_LOG} crit;
+${rate_limit_line}
         limit_except GET { deny all; }
         default_type text/plain;
         add_header Cache-Control "no-store" always;
@@ -1372,6 +1437,15 @@ server {
 
     location ^~ /sub/ {
         access_log off;
+        error_log ${NGINX_SENSITIVE_LOG} crit;
+${rate_limit_line}
+        return 404;
+    }
+
+    location ^~ /proxy/ {
+        access_log off;
+        error_log ${NGINX_SENSITIVE_LOG} crit;
+${rate_limit_line}
         return 404;
     }
 
@@ -1402,6 +1476,8 @@ server {
 
     location = /sub/${SUB_TOKEN} {
         access_log off;
+        error_log ${NGINX_SENSITIVE_LOG} crit;
+${rate_limit_line}
         limit_except GET { deny all; }
         default_type text/plain;
         add_header Cache-Control "no-store" always;
@@ -1410,6 +1486,15 @@ server {
 
     location ^~ /sub/ {
         access_log off;
+        error_log ${NGINX_SENSITIVE_LOG} crit;
+${rate_limit_line}
+        return 404;
+    }
+
+    location ^~ /proxy/ {
+        access_log off;
+        error_log ${NGINX_SENSITIVE_LOG} crit;
+${rate_limit_line}
         return 404;
     }
 
@@ -1426,6 +1511,7 @@ server {
 EOF
   fi
 
+  harden_custom_proxy_locations || true
   enable_nginx_conf "$conf"
   disable_conflicting_sbp_domain_configs || true
 }
@@ -1436,6 +1522,13 @@ reload_nginx(){
   if ! out="$(nginx -t 2>&1)"; then
     warn "nginx 配置检查失败："
     printf '%s\n' "$out" >&2
+    if restore_latest_backup nginx-conf "$(nginx_conf_path)" && out="$(nginx -t 2>&1)"; then
+      warn "已回滚到上一份 nginx 配置"
+    else
+      out="$(nginx -t 2>&1 || true)"
+    fi
+  fi
+  if ! nginx -t >/dev/null 2>&1; then
     if disable_stale_sbp_nginx_configs; then
       if ! out="$(nginx -t 2>&1)"; then
         warn "隔离旧配置后 nginx 仍未通过检查："
@@ -1760,8 +1853,20 @@ write_config(){
     return 1
   fi
 
+  backup_file "$CONF_JSON" config-json
   mv -f "$tmp" "$CONF_JSON"
   save_env
+}
+
+restart_singbox_safe(){
+  if systemctl restart "${SYSTEMD_SERVICE}"; then
+    return 0
+  fi
+  warn "sing-box 重启失败，尝试回滚上一份配置"
+  if restore_latest_backup config-json "$CONF_JSON"; then
+    systemctl restart "${SYSTEMD_SERVICE}" && return 0
+  fi
+  return 1
 }
 
 # ===== 防火墙 =====
@@ -2040,6 +2145,135 @@ write_subscription(){
   save_env
 }
 
+schedule_token_cleanup(){
+  local file="$1" extra="${2:-}" minutes="${3:-$TOKEN_GRACE_MINUTES}" id script
+  [[ -n "$file" ]] || return 0
+  id="$(basename "$file" | tr -c 'A-Za-z0-9_.-' '_')"
+  script="$SB_DIR/cleanup-${id}.sh"
+  cat > "$script" <<EOF
+#!/usr/bin/env bash
+set +e
+rm -f "$file"
+[[ -n "$extra" ]] && rm -f "$extra"
+nginx -t >/dev/null 2>&1 && { systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1 || true; }
+rm -f "$script"
+EOF
+  chmod 0755 "$script"
+  if command -v systemd-run >/dev/null 2>&1; then
+    systemd-run --unit "sing-box-plus-cleanup-${id}" --on-active="${minutes}m" "$script" >/dev/null 2>&1 || warn "无法注册 token 清理任务：$file"
+  else
+    warn "systemd-run 不可用，请稍后手动删除旧 token 配置：$file"
+  fi
+}
+
+legacy_sub_location_conf(){
+  local token="$1" file rate_limit_line=""
+  [[ -n "$token" ]] || return 0
+  file="/etc/nginx/sing-box-plus.locations/legacy-sub-${token}.conf"
+  write_nginx_rate_limit_conf && rate_limit_line="    limit_req zone=sbp_sensitive burst=20 nodelay;"
+  cat > "$file" <<EOF
+location = /sub/${token} {
+    access_log off;
+    error_log ${NGINX_SENSITIVE_LOG} crit;
+${rate_limit_line}
+    limit_except GET { deny all; }
+    default_type text/plain;
+    add_header Cache-Control "no-store" always;
+    try_files /sub/${token} =404;
+}
+EOF
+  chmod 0644 "$file" 2>/dev/null || true
+  schedule_token_cleanup "$file" "$WEB_ROOT/sub/$token"
+}
+
+harden_proxy_location_file(){
+  local f="$1" tmp rate_limit_line=""
+  [[ -f "$f" ]] || return 0
+  write_nginx_rate_limit_conf && rate_limit_line="    limit_req zone=sbp_sensitive burst=20 nodelay;"
+  tmp="${f}.tmp.$$"
+  awk '
+    /location[[:space:]]+\^~[[:space:]]+\/proxy\// { skip=1; depth=0 }
+    skip {
+      depth += gsub(/\{/, "{")
+      depth -= gsub(/\}/, "}")
+      if (depth <= 0) skip=0
+      next
+    }
+    { print }
+  ' "$f" > "$tmp" && mv -f "$tmp" "$f"
+  awk -v rate="$rate_limit_line" -v elog="$NGINX_SENSITIVE_LOG" '
+    /location[[:space:]]*=[[:space:]]*\/proxy\/[0-9A-Fa-f]{64}/ && !done {
+      print
+      print "    access_log off;"
+      print "    error_log " elog " crit;"
+      if (rate != "") print rate
+      print "    limit_except GET { deny all; }"
+      done=1
+      next
+    }
+    /access_log[[:space:]]+off;/ { next }
+    /error_log[[:space:]].*sing-box-plus-sensitive\.log/ { next }
+    /limit_req[[:space:]]+zone=sbp_sensitive/ { next }
+    /limit_except[[:space:]]+GET[[:space:]]*\{[[:space:]]*deny[[:space:]]+all;[[:space:]]*\}/ { next }
+    { print }
+  ' "$f" > "$tmp" && mv -f "$tmp" "$f"
+  rm -f "$tmp"
+}
+
+harden_custom_proxy_locations(){
+  local f
+  [[ -d /etc/nginx/sing-box-plus.locations ]] || return 0
+  while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    grep -qE 'location[[:space:]]*=[[:space:]]*/proxy/[0-9A-Fa-f]{64}' "$f" 2>/dev/null || continue
+    harden_proxy_location_file "$f"
+  done < <(find /etc/nginx/sing-box-plus.locations -maxdepth 1 -type f -name '*.conf' 2>/dev/null | sort)
+}
+
+rotate_proxy_tokens(){
+  local f old new legacy count=0
+  [[ -d /etc/nginx/sing-box-plus.locations ]] || return 0
+  while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    [[ "$(basename "$f")" == legacy-proxy-* ]] && continue
+    old="$(grep -oE '/proxy/[0-9A-Fa-f]{64}' "$f" 2>/dev/null | head -n1 | cut -d/ -f3)"
+    [[ -n "$old" ]] || continue
+    new="$(rand_token64)"
+    legacy="/etc/nginx/sing-box-plus.locations/legacy-proxy-${old}.conf"
+    backup_file "$f" custom-nginx
+    cp -a "$f" "$legacy" 2>/dev/null || true
+    sed -i -E "0,/\\/proxy\\/[0-9A-Fa-f]{64}/s//\\/proxy\\/${new}/" "$f"
+    harden_proxy_location_file "$f"
+    harden_proxy_location_file "$legacy"
+    schedule_token_cleanup "$legacy"
+    ok "代理 token 已轮换：/proxy/$(mask_secret "$new")"
+    count=$((count + 1))
+  done < <(find /etc/nginx/sing-box-plus.locations -maxdepth 1 -type f -name '*.conf' 2>/dev/null | sort)
+  return 0
+}
+
+rotate_tokens(){
+  ensure_installed_or_hint || return 0
+  load_env || true
+  [[ -n "${WEB_DOMAIN:-}" ]] || { warn "未配置 Web/订阅域名，无法轮换 token"; return 0; }
+  local old_sub="${SUB_TOKEN:-}" new_sub
+  ensure_sub_token
+  old_sub="${old_sub:-$SUB_TOKEN}"
+  new_sub="$(rand_token64)"
+  if [[ -n "$old_sub" && "$old_sub" != "$new_sub" && -f "$WEB_ROOT/sub/$old_sub" ]]; then
+    legacy_sub_location_conf "$old_sub"
+  fi
+  SUB_TOKEN="$new_sub"
+  save_env
+  build_links 4
+  write_subscription_current
+  write_nginx_config
+  rotate_proxy_tokens || true
+  reload_nginx || true
+  ok "订阅 token 已轮换：$(subscription_url)"
+  warn "旧 token 将保留约 ${TOKEN_GRACE_MINUTES} 分钟后自动清理"
+}
+
 print_links_grouped(){
   local mode="${1:-4}" sub_url
   build_links "$mode"
@@ -2162,6 +2396,22 @@ health_check(){
         warn "订阅状态 ${http}：/sub/$(mask_secret "$SUB_TOKEN")"
       fi
     fi
+
+    if command -v curl >/dev/null 2>&1; then
+      http="$(curl -k -sS -o /tmp/sbp-robots.$$ -w '%{http_code}' --max-time 15 "https://${WEB_DOMAIN}/robots.txt" 2>/dev/null || printf '000')"
+      if [[ "$http" == "200" ]] && ! grep -qE '/sub/|/proxy/' "/tmp/sbp-robots.$$" 2>/dev/null; then
+        ok "robots.txt 未暴露敏感路径"
+      else
+        warn "robots.txt 可能暴露敏感路径或不可访问"
+      fi
+      rm -f "/tmp/sbp-robots.$$"
+
+      http="$(curl -k -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://${WEB_DOMAIN}/sub/test" 2>/dev/null || printf '000')"
+      [[ "$http" == "404" ]] && ok "/sub/ 非 token 路径返回 404" || warn "/sub/ 非 token 路径状态异常：${http}"
+
+      http="$(curl -k -sS -o /dev/null -w '%{http_code}' --max-time 15 "https://${WEB_DOMAIN}/proxy/test" 2>/dev/null || printf '000')"
+      [[ "$http" == "404" ]] && ok "/proxy/ 非 token 路径返回 404" || warn "/proxy/ 非 token 路径状态异常：${http}"
+    fi
   fi
 
   if [[ -d /etc/nginx/sing-box-plus.locations ]]; then
@@ -2223,6 +2473,7 @@ banner(){
   echo -e "  ${C_GREEN}5)${C_RESET} 一键开启 BBR"
   echo -e "  ${C_GREEN}7)${C_RESET} 配置 SNI / 协议 / 域名订阅"
   echo -e "  ${C_GREEN}9)${C_RESET} 健康检查"
+  echo -e "  ${C_GREEN}10)${C_RESET} 轮换订阅/代理 token"
   echo -e "  ${C_RED}8)${C_RESET} 卸载"
   echo -e "  ${C_RED}0)${C_RESET} 退出"
   hr
@@ -2355,7 +2606,7 @@ configure_install_options(){
 
 # ===== 业务流程 =====
 restart_service(){
-  systemctl restart "${SYSTEMD_SERVICE}" || die "重启失败"
+  restart_singbox_safe || die "重启失败"
   systemctl --no-pager status "${SYSTEMD_SERVICE}" | sed -n '1,6p' || true
 }
 
@@ -2373,7 +2624,7 @@ rotate_ports(){
   save_all_ports          # 重新生成并保存 20 个不重复端口
   write_config            # 用新端口重写 /opt/sing-box/config.json
   open_firewall           # ★ 新增：把“当前配置中的端口”全部放行
-  systemctl restart "${SYSTEMD_SERVICE}"
+  restart_singbox_safe
   write_subscription || true
 
   info "已更换端口并重启。"
@@ -2405,7 +2656,7 @@ deploy_native(){
   "$BIN_PATH" check -c "$CONF_JSON"
   info "写入并启用 systemd 服务 ..."
   write_systemd
-  systemctl restart "${SYSTEMD_SERVICE}" >/dev/null 2>&1 || true
+  restart_singbox_safe >/dev/null 2>&1 || true
   open_firewall
   write_subscription || true
   echo; echo -e "${C_BOLD}${C_GREEN}★ 部署完成${C_RESET}"; echo
@@ -2442,7 +2693,7 @@ menu(){
   write_config               || { echo "[ERR] 生成配置失败"; }
   write_systemd              || true
   open_firewall              || true
-  systemctl restart "${SYSTEMD_SERVICE}" || true
+  restart_singbox_safe || true
   write_subscription         || true
   set -e                                            # ← 恢复严格模式
   print_links_grouped
@@ -2455,6 +2706,7 @@ menu(){
    4) if ensure_installed_or_hint; then rotate_ports; fi; menu ;;
     5) enable_bbr; read -rp "回车返回..." _ || true; menu ;;
     9) health_check; read -rp "回车返回..." _ || true; menu ;;
+    10) rotate_tokens; read -rp "回车返回..." _ || true; menu ;;
     7)
       if ! configure_install_options; then
         read -rp "回车返回..." _ || true
@@ -2465,7 +2717,7 @@ menu(){
         setup_web || true
         write_config || { echo "[ERR] 生成配置失败"; }
         open_firewall || true
-        systemctl restart "${SYSTEMD_SERVICE}" || true
+        restart_singbox_safe || true
         write_subscription || true
         print_links_grouped
         exit 0
