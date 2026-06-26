@@ -1206,17 +1206,20 @@ reload_nginx(){
   fi
 }
 
-disable_stale_cf_origin_443_rule(){
+disable_stale_cf_origin_443_rules(){
+  local chain
   command -v iptables >/dev/null 2>&1 || return 0
-  if iptables -C INPUT -p tcp --dport 443 -j CF_ORIGIN_VJ 2>/dev/null; then
-    while iptables -D INPUT -p tcp --dport 443 -j CF_ORIGIN_VJ 2>/dev/null; do :; done
-    warn "已移除旧 Cloudflare-only 443 防火墙规则：CF_ORIGIN_VJ"
-  fi
+  for chain in CF_ORIGIN_VJ CF_ORIGIN_443; do
+    if iptables -C INPUT -p tcp --dport 443 -j "$chain" 2>/dev/null; then
+      while iptables -D INPUT -p tcp --dport 443 -j "$chain" 2>/dev/null; do :; done
+      warn "已移除旧 Cloudflare-only 443 防火墙规则：${chain}"
+    fi
+  done
 }
 
 open_web_firewall(){
   local r p
-  disable_stale_cf_origin_443_rule
+  disable_stale_cf_origin_443_rules
   for r in 80/tcp 443/tcp; do
     p="${r%/*}"
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q -E "active|活跃"; then
