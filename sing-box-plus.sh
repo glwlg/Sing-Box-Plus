@@ -287,7 +287,7 @@ ENABLE_ANYTLS=${ENABLE_ANYTLS:-true}
 
 # 常量
 SCRIPT_NAME="Sing-Box-Plus 管理脚本"
-SCRIPT_VERSION="v4.7.0"
+SCRIPT_VERSION="v4.7.1"
 REALITY_SERVER=${REALITY_SERVER:-www.tesla.com}
 REALITY_SERVER_PORT=${REALITY_SERVER_PORT:-443}
 GRPC_SERVICE=${GRPC_SERVICE:-grpc}
@@ -1002,6 +1002,7 @@ disable_conflicting_sbp_domain_configs(){
     [[ -d "$d" ]] || continue
     while IFS= read -r f; do
       [[ -n "$f" && ( -f "$f" || -L "$f" ) ]] || continue
+      [[ "$f" == *.disabled-by-sing-box-plus.* ]] && continue
       [[ "$(readlink -f "$f" 2>/dev/null || printf '%s' "$f")" == "$(readlink -f "$current" 2>/dev/null || printf '%s' "$current")" ]] && continue
       grep -qE '^[[:space:]]*server_name[[:space:]]' "$f" 2>/dev/null || continue
       grep -qF "$WEB_DOMAIN" "$f" 2>/dev/null || continue
@@ -1023,6 +1024,7 @@ disable_stale_sbp_nginx_configs(){
     [[ -d "$d" ]] || continue
     while IFS= read -r f; do
       [[ -n "$f" && ( -f "$f" || -L "$f" ) ]] || continue
+      [[ "$f" == *.disabled-by-sing-box-plus.* ]] && continue
       bak="${f}.disabled-by-sing-box-plus.${ts}"
       if mv "$f" "$bak" 2>/dev/null; then
         warn "已隔离旧 nginx 配置：$f -> $bak"
@@ -1144,9 +1146,16 @@ server {
     include /etc/nginx/sing-box-plus.locations/*.conf;
 
     location = /sub/${SUB_TOKEN} {
+        access_log off;
+        limit_except GET { deny all; }
         default_type text/plain;
-        add_header Cache-Control "no-store";
+        add_header Cache-Control "no-store" always;
         try_files /sub/${SUB_TOKEN} =404;
+    }
+
+    location ^~ /sub/ {
+        access_log off;
+        return 404;
     }
 
     location / {
@@ -1168,9 +1177,16 @@ server {
     }
 
     location = /sub/${SUB_TOKEN} {
+        access_log off;
+        limit_except GET { deny all; }
         default_type text/plain;
-        add_header Cache-Control "no-store";
+        add_header Cache-Control "no-store" always;
         try_files /sub/${SUB_TOKEN} =404;
+    }
+
+    location ^~ /sub/ {
+        access_log off;
+        return 404;
     }
 
     location / {
@@ -1209,14 +1225,31 @@ reload_nginx(){
 }
 
 disable_stale_cf_origin_443_rules(){
-  local chain
-  command -v iptables >/dev/null 2>&1 || return 0
-  for chain in CF_ORIGIN_VJ CF_ORIGIN_443; do
-    if iptables -C INPUT -p tcp --dport 443 -j "$chain" 2>/dev/null; then
-      while iptables -D INPUT -p tcp --dport 443 -j "$chain" 2>/dev/null; do :; done
-      warn "已移除旧 Cloudflare-only 443 防火墙规则：${chain}"
-    fi
-  done
+  local chain family handle
+  if command -v iptables >/dev/null 2>&1; then
+    for chain in CF_ORIGIN_VJ CF_ORIGIN_443; do
+      if iptables -C INPUT -p tcp --dport 443 -j "$chain" 2>/dev/null; then
+        while iptables -D INPUT -p tcp --dport 443 -j "$chain" 2>/dev/null; do :; done
+        warn "已移除旧 Cloudflare-only 443 防火墙规则：${chain}"
+      fi
+    done
+  fi
+
+  if command -v nft >/dev/null 2>&1; then
+    for family in ip ip6; do
+      for chain in CF_ORIGIN_VJ CF_ORIGIN_443; do
+        while :; do
+          handle="$(nft -a list chain "$family" filter INPUT 2>/dev/null \
+            | awk -v c="$chain" '$0 ~ /dport[[:space:]]+443/ && $0 ~ ("jump[[:space:]]+" c) {for (i=1; i<=NF; i++) if ($i == "handle") print $(i+1)}' \
+            | head -n1)"
+          [[ -n "$handle" ]] || break
+          nft delete rule "$family" filter INPUT handle "$handle" 2>/dev/null || break
+          warn "已移除旧 nftables Cloudflare-only 443 规则：${family}/${chain}"
+        done
+        nft delete chain "$family" filter "$chain" 2>/dev/null || true
+      done
+    done
+  fi
 }
 
 open_web_firewall(){
@@ -1255,6 +1288,20 @@ request_certificate(){
   ok "证书已申请/续期：${WEB_DOMAIN}"
 }
 
+install_certbot_deploy_hook(){
+  command -v certbot >/dev/null 2>&1 || return 0
+  local hook_dir="/etc/letsencrypt/renewal-hooks/deploy" hook
+  hook="$hook_dir/90-sing-box-plus-reload.sh"
+  mkdir -p "$hook_dir"
+  cat > "$hook" <<EOF
+#!/usr/bin/env bash
+set +e
+systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1 || true
+systemctl restart ${SYSTEMD_SERVICE} >/dev/null 2>&1 || true
+EOF
+  chmod 0755 "$hook"
+}
+
 setup_web(){
   [[ -n "${WEB_DOMAIN:-}" ]] || return 0
   WEB_DOMAIN="$(normalize_domain "$WEB_DOMAIN")"
@@ -1266,6 +1313,7 @@ setup_web(){
   open_web_firewall
   reload_nginx || true
   request_certificate
+  install_certbot_deploy_hook
   open_web_firewall
   write_nginx_config
   reload_nginx || true
@@ -1372,8 +1420,8 @@ write_config(){
   ensure_creds; save_all_ports; mk_cert
   flag_enabled "$ENABLE_WARP" && ensure_warpcli_proxy
 
-  local CRT="${CRT_PATH:-$CERT_DIR/fullchain.pem}" KEY="${KEY_PATH:-$CERT_DIR/key.pem}"
-  jq -n \
+  local CRT="${CRT_PATH:-$CERT_DIR/fullchain.pem}" KEY="${KEY_PATH:-$CERT_DIR/key.pem}" tmp="${CONF_JSON}.tmp.$$"
+  if ! jq -n \
   --arg RS "$REALITY_SERVER" --argjson RSP "${REALITY_SERVER_PORT:-443}" --arg UID "$UUID" \
   --arg WSHOST "$WARP_SOCKS_HOST" --argjson WSPORT "$WARP_SOCKS_PORT" \
   --arg RPR "$REALITY_PRIV" --arg RPB "$REALITY_PUB" --arg SID "$REALITY_SID" \
@@ -1470,7 +1518,19 @@ write_config(){
         { final:"direct" }
       end
     )
-  }' > "$CONF_JSON"
+  }' > "$tmp"; then
+    rm -f "$tmp"
+    err "生成配置失败"
+    return 1
+  fi
+
+  if [[ -x "$BIN_PATH" ]] && ! "$BIN_PATH" check -c "$tmp"; then
+    rm -f "$tmp"
+    err "配置检查失败，已保留旧配置"
+    return 1
+  fi
+
+  mv -f "$tmp" "$CONF_JSON"
   save_env
 }
 
@@ -1779,6 +1839,122 @@ print_links_grouped(){
   hr
 }
 
+mask_secret(){
+  local v="${1:-}" n
+  n="${#v}"
+  if (( n <= 16 )); then
+    printf '***'
+  else
+    printf '%s...%s' "${v:0:8}" "${v: -8}"
+  fi
+}
+
+cert_days_left(){
+  local cert="$1" end epoch now
+  [[ -s "$cert" ]] || return 1
+  end="$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2-)" || return 1
+  if epoch="$(date -d "$end" +%s 2>/dev/null)"; then
+    now="$(date +%s)"
+    printf '%s' "$(( (epoch - now) / 86400 ))"
+  else
+    printf '%s' "$end"
+  fi
+}
+
+health_check(){
+  local out http url cert days chain blocked=0 custom_count ports
+  ensure_dirs || true
+  load_env || true
+  load_ports || true
+  ensure_any_protocol_enabled
+
+  hr
+  echo -e "${C_CYAN}${C_BOLD}健康检查${C_RESET}"
+  hr
+  echo "域名：${WEB_DOMAIN:-未配置}"
+  echo "SNI：${REALITY_SERVER}:${REALITY_SERVER_PORT}"
+  echo "区域：${REGION_TAG}"
+  echo "协议：$(protocol_summary)"
+  ports="$(current_firewall_rules | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  echo "端口：${ports:-未生成}"
+
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "${SYSTEMD_SERVICE}"; then
+    ok "sing-box 服务运行中"
+  else
+    warn "sing-box 服务未运行"
+  fi
+
+  if [[ -x "$BIN_PATH" && -f "$CONF_JSON" ]]; then
+    if out="$("$BIN_PATH" check -c "$CONF_JSON" 2>&1)"; then
+      ok "sing-box 配置检查通过"
+    else
+      warn "sing-box 配置检查失败"
+      printf '%s\n' "$out" | sed -n '1,8p'
+    fi
+  else
+    warn "未找到 sing-box 二进制或配置文件"
+  fi
+
+  if command -v nginx >/dev/null 2>&1; then
+    if out="$(nginx -t 2>&1)"; then
+      ok "nginx 配置检查通过"
+    else
+      warn "nginx 配置检查失败"
+      printf '%s\n' "$out" | sed -n '1,8p'
+    fi
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
+      ok "nginx 服务运行中"
+    else
+      warn "nginx 服务未运行"
+    fi
+  elif [[ -n "${WEB_DOMAIN:-}" ]]; then
+    warn "已配置域名但 nginx 未安装"
+  fi
+
+  if [[ -n "${WEB_DOMAIN:-}" ]]; then
+    cert="/etc/letsencrypt/live/${WEB_DOMAIN}/fullchain.pem"
+    if days="$(cert_days_left "$cert" 2>/dev/null)"; then
+      if [[ "$days" =~ ^-?[0-9]+$ ]] && (( days < 15 )); then
+        warn "证书剩余 ${days} 天"
+      else
+        ok "证书剩余 ${days} 天"
+      fi
+    else
+      warn "未找到可读证书：${cert}"
+    fi
+
+    if [[ -n "${SUB_TOKEN:-}" && -n "$(command -v curl 2>/dev/null)" ]]; then
+      url="https://${WEB_DOMAIN}/sub/${SUB_TOKEN}"
+      http="$(curl -k -sS -o /dev/null -w '%{http_code}' --max-time 15 "$url" 2>/dev/null || printf '000')"
+      if [[ "$http" =~ ^2 ]]; then
+        ok "订阅状态 ${http}：/sub/$(mask_secret "$SUB_TOKEN")"
+      else
+        warn "订阅状态 ${http}：/sub/$(mask_secret "$SUB_TOKEN")"
+      fi
+    fi
+  fi
+
+  if [[ -d /etc/nginx/sing-box-plus.locations ]]; then
+    custom_count="$(find /etc/nginx/sing-box-plus.locations -maxdepth 1 -type f -name '*.conf' 2>/dev/null | wc -l | awk '{print $1}')"
+    [[ "${custom_count:-0}" != "0" ]] && info "自定义 nginx location：${custom_count} 个"
+  fi
+
+  if command -v iptables >/dev/null 2>&1; then
+    for chain in CF_ORIGIN_VJ CF_ORIGIN_443; do
+      if iptables -C INPUT -p tcp --dport 443 -j "$chain" 2>/dev/null; then
+        warn "发现旧 Cloudflare-only 443 规则：${chain}"
+        blocked=1
+      fi
+    done
+  fi
+  if command -v nft >/dev/null 2>&1 && nft list ruleset 2>/dev/null | grep -qE 'CF_ORIGIN_(VJ|443)|dport[[:space:]]+443.*drop'; then
+    warn "nftables 中可能存在 443 限制规则，请人工确认"
+    blocked=1
+  fi
+  [[ "$blocked" == "0" ]] && ok "未发现旧 Cloudflare-only 443 INPUT 规则"
+  hr
+}
+
 # ===== BBR =====
 enable_bbr(){
   if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
@@ -1816,6 +1992,7 @@ banner(){
   echo -e "  ${C_GREEN}4)${C_RESET} 一键更换所有端口"
   echo -e "  ${C_GREEN}5)${C_RESET} 一键开启 BBR"
   echo -e "  ${C_GREEN}7)${C_RESET} 配置 SNI / 协议 / 域名订阅"
+  echo -e "  ${C_GREEN}9)${C_RESET} 健康检查"
   echo -e "  ${C_RED}8)${C_RESET} 卸载"
   echo -e "  ${C_RED}0)${C_RESET} 退出"
   hr
@@ -2047,6 +2224,7 @@ menu(){
     3) if ensure_installed_or_hint; then restart_service; fi; read -rp "回车返回..." _ || true; menu ;;
    4) if ensure_installed_or_hint; then rotate_ports; fi; menu ;;
     5) enable_bbr; read -rp "回车返回..." _ || true; menu ;;
+    9) health_check; read -rp "回车返回..." _ || true; menu ;;
     7)
       if ! configure_install_options; then
         read -rp "回车返回..." _ || true
