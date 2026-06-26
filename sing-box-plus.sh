@@ -287,7 +287,7 @@ ENABLE_ANYTLS=${ENABLE_ANYTLS:-true}
 
 # 常量
 SCRIPT_NAME="Sing-Box-Plus 管理脚本"
-SCRIPT_VERSION="v4.7.1"
+SCRIPT_VERSION="v4.7.2"
 REALITY_SERVER=${REALITY_SERVER:-www.tesla.com}
 REALITY_SERVER_PORT=${REALITY_SERVER_PORT:-443}
 GRPC_SERVICE=${GRPC_SERVICE:-grpc}
@@ -1036,7 +1036,101 @@ disable_stale_sbp_nginx_configs(){
 }
 
 write_demo_site(){
-  mkdir -p "$WEB_ROOT/sub" "$WEB_ROOT/.well-known/acme-challenge"
+  local site_url="${WEB_DOMAIN:-example.com}"
+  mkdir -p "$WEB_ROOT/assets" "$WEB_ROOT/about" "$WEB_ROOT/status" "$WEB_ROOT/contact" "$WEB_ROOT/sub" "$WEB_ROOT/.well-known/acme-challenge"
+
+  cat > "$WEB_ROOT/assets/site.css" <<'CSS'
+:root {
+  color-scheme: light;
+  --bg: #f6f8fb;
+  --surface: #ffffff;
+  --ink: #172033;
+  --muted: #5d6b7d;
+  --line: #d9e1eb;
+  --accent: #176b5d;
+  --accent-2: #2f5f9f;
+  --warn: #b7791f;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); }
+a { color: inherit; text-decoration: none; }
+.shell { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+.site-header { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px 0; border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: .04em; }
+.mark { width: 30px; height: 30px; border-radius: 7px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); display: inline-block; }
+.nav { display: flex; gap: 22px; color: var(--muted); font-size: 14px; }
+.hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(320px, .95fr); gap: 48px; align-items: center; padding: 70px 0 34px; }
+.eyebrow { color: var(--accent); font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }
+h1 { margin: 14px 0 0; font-size: clamp(42px, 6vw, 76px); line-height: .96; letter-spacing: 0; }
+.lead { margin: 24px 0 0; color: var(--muted); font-size: 18px; line-height: 1.7; max-width: 650px; }
+.actions { margin-top: 30px; display: flex; gap: 12px; flex-wrap: wrap; }
+.button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; border-radius: 8px; padding: 0 18px; font-weight: 750; background: #152034; color: #fff; }
+.button.secondary { background: #e6edf3; color: #1d2735; }
+.panel, .card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 18px 60px rgba(23, 32, 51, .08); }
+.panel { padding: 24px; }
+.panel-title { margin: 0 0 8px; font-size: 15px; color: var(--muted); }
+.status-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 17px 0; border-bottom: 1px solid #edf1f6; }
+.status-row:last-child { border-bottom: 0; }
+.label { color: var(--muted); }
+.value { font-weight: 800; color: var(--ink); }
+.ok { color: var(--accent); }
+.section { padding: 54px 0; }
+.section-head { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 18px; }
+.section h2 { margin: 0; font-size: clamp(26px, 4vw, 40px); line-height: 1.05; }
+.section p { color: var(--muted); line-height: 1.65; }
+.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.card { padding: 22px; box-shadow: none; }
+.card h3 { margin: 0 0 10px; font-size: 18px; }
+.card p { margin: 0; }
+.split { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 28px; align-items: start; }
+.list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.list li { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; }
+.table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.table th, .table td { padding: 14px 16px; border-bottom: 1px solid #edf1f6; text-align: left; }
+.table th { color: var(--muted); font-size: 13px; font-weight: 750; }
+.table tr:last-child td { border-bottom: 0; }
+.footer { margin-top: 42px; padding: 28px 0 38px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; display: flex; justify-content: space-between; gap: 16px; }
+@media (max-width: 820px) {
+  .site-header, .hero, .split, .section-head, .footer { display: block; }
+  .nav { margin-top: 14px; flex-wrap: wrap; }
+  .hero { padding-top: 46px; }
+  .panel { margin-top: 28px; }
+  .grid { grid-template-columns: 1fr; }
+}
+CSS
+
+  cat > "$WEB_ROOT/favicon.svg" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#176b5d"/>
+  <path d="M17 41 31 14h16L33 41z" fill="#ffffff"/>
+  <path d="M21 50h26" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+</svg>
+SVG
+
+  cat > "$WEB_ROOT/site.webmanifest" <<'JSON'
+{"name":"Nova Grid","short_name":"Nova Grid","start_url":"/","display":"standalone","background_color":"#f6f8fb","theme_color":"#176b5d","icons":[{"src":"/favicon.svg","sizes":"any","type":"image/svg+xml"}]}
+JSON
+
+  cat > "$WEB_ROOT/robots.txt" <<EOF
+User-agent: *
+Allow: /
+Disallow: /sub/
+Disallow: /proxy/
+
+Sitemap: https://${site_url}/sitemap.xml
+EOF
+
+  cat > "$WEB_ROOT/sitemap.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://${site_url}/</loc></url>
+  <url><loc>https://${site_url}/about/</loc></url>
+  <url><loc>https://${site_url}/status/</loc></url>
+  <url><loc>https://${site_url}/contact/</loc></url>
+</urlset>
+EOF
+
   cat > "$WEB_ROOT/index.html" <<'HTML'
 <!doctype html>
 <html lang="en">
@@ -1044,63 +1138,186 @@ write_demo_site(){
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nova Grid</title>
-  <style>
-    :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; min-height: 100vh; background: #f5f7fb; color: #172033; }
-    .shell { max-width: 1120px; margin: 0 auto; padding: 48px 22px; }
-    header { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding-bottom: 42px; }
-    .brand { font-weight: 800; letter-spacing: .08em; }
-    nav { display: flex; gap: 18px; color: #526070; font-size: 14px; }
-    .hero { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(280px, .9fr); gap: 44px; align-items: center; }
-    h1 { margin: 0; font-size: clamp(42px, 6vw, 76px); line-height: .95; letter-spacing: 0; }
-    .lead { margin: 24px 0 32px; color: #48576a; font-size: 18px; line-height: 1.7; max-width: 620px; }
-    .actions { display: flex; gap: 12px; flex-wrap: wrap; }
-    .button { border: 0; border-radius: 8px; padding: 13px 18px; font-weight: 700; background: #111827; color: white; }
-    .button.secondary { background: #e6edf5; color: #1d2735; }
-    .panel { background: white; border: 1px solid #dbe3ee; border-radius: 8px; padding: 24px; box-shadow: 0 24px 80px rgba(23, 32, 51, .12); }
-    .metric { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 18px 0; border-bottom: 1px solid #edf1f6; }
-    .metric:last-child { border-bottom: 0; }
-    .label { color: #607085; }
-    .value { font-weight: 800; color: #111827; }
-    .grid { margin-top: 56px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
-    .item { background: white; border: 1px solid #dbe3ee; border-radius: 8px; padding: 22px; }
-    .item h2 { margin: 0 0 10px; font-size: 18px; }
-    .item p { margin: 0; color: #5c6b7d; line-height: 1.6; }
-    @media (max-width: 760px) {
-      header, .hero { display: block; }
-      nav { margin-top: 14px; }
-      .panel { margin-top: 30px; }
-      .grid { grid-template-columns: 1fr; }
-    }
-  </style>
+  <meta name="description" content="Operations workspace for distributed energy teams.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/site.webmanifest">
+  <link rel="stylesheet" href="/assets/site.css">
 </head>
 <body>
   <div class="shell">
-    <header>
-      <div class="brand">NOVA GRID</div>
-      <nav><span>Platform</span><span>Energy</span><span>Insights</span></nav>
+    <header class="site-header">
+      <a class="brand" href="/"><span class="mark"></span><span>NOVA GRID</span></a>
+      <nav class="nav"><a href="/about/">Platform</a><a href="/status/">Status</a><a href="/contact/">Contact</a></nav>
     </header>
     <main class="hero">
       <section>
+        <div class="eyebrow">Operations workspace</div>
         <h1>Live operations for distributed energy teams.</h1>
         <p class="lead">Track sites, capacity, dispatch windows, and service health from a quiet command center built for daily operations.</p>
         <div class="actions">
-          <button class="button">View Dashboard</button>
-          <button class="button secondary">System Status</button>
+          <a class="button" href="/status/">View Status</a>
+          <a class="button secondary" href="/about/">Explore Platform</a>
         </div>
       </section>
       <aside class="panel">
-        <div class="metric"><span class="label">Managed Sites</span><span class="value">128</span></div>
-        <div class="metric"><span class="label">Available Capacity</span><span class="value">94.6%</span></div>
-        <div class="metric"><span class="label">Dispatch Readiness</span><span class="value">Ready</span></div>
-        <div class="metric"><span class="label">Service Window</span><span class="value">02:00 UTC</span></div>
+        <p class="panel-title">Network overview</p>
+        <div class="status-row"><span class="label">Managed Sites</span><span class="value">128</span></div>
+        <div class="status-row"><span class="label">Available Capacity</span><span class="value">94.6%</span></div>
+        <div class="status-row"><span class="label">Dispatch Readiness</span><span class="value ok">Ready</span></div>
+        <div class="status-row"><span class="label">Service Window</span><span class="value">02:00 UTC</span></div>
       </aside>
     </main>
-    <section class="grid">
-      <article class="item"><h2>Site Health</h2><p>Monitor availability, incident states, and operator actions across active regions.</p></article>
-      <article class="item"><h2>Capacity Planning</h2><p>Compare forecast demand with reserve margins before dispatch windows open.</p></article>
-      <article class="item"><h2>Operations Log</h2><p>Review changes, alerts, and service notes from a single operational timeline.</p></article>
+    <section class="section">
+      <div class="section-head">
+        <h2>Built for repeatable control-room routines.</h2>
+        <p>Clear daily views keep operators focused on availability, readiness, and follow-up work.</p>
+      </div>
+      <div class="grid">
+        <article class="card"><h3>Site Health</h3><p>Monitor availability, incident states, and operator actions across active regions.</p></article>
+        <article class="card"><h3>Capacity Planning</h3><p>Compare forecast demand with reserve margins before dispatch windows open.</p></article>
+        <article class="card"><h3>Operations Log</h3><p>Review changes, alerts, and service notes from a single operational timeline.</p></article>
+      </div>
     </section>
+    <footer class="footer"><span>Nova Grid Operations</span><span>Regional systems desk</span></footer>
+  </div>
+</body>
+</html>
+HTML
+
+  cat > "$WEB_ROOT/about/index.html" <<'HTML'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Platform | Nova Grid</title>
+  <meta name="description" content="Regional operations tools for distributed energy portfolios.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="site-header">
+      <a class="brand" href="/"><span class="mark"></span><span>NOVA GRID</span></a>
+      <nav class="nav"><a href="/about/">Platform</a><a href="/status/">Status</a><a href="/contact/">Contact</a></nav>
+    </header>
+    <main class="section split">
+      <section>
+        <div class="eyebrow">Platform</div>
+        <h1>Regional visibility without busywork.</h1>
+        <p class="lead">Nova Grid brings asset status, dispatch notes, and maintenance follow-ups into one consistent operating view.</p>
+      </section>
+      <ul class="list">
+        <li><strong>Daily readiness</strong><br>Confirm availability and exceptions before handover windows.</li>
+        <li><strong>Event tracking</strong><br>Keep incident updates aligned with site, region, and owner context.</li>
+        <li><strong>Capacity review</strong><br>Compare planned dispatch with current reserve and maintenance states.</li>
+      </ul>
+    </main>
+    <footer class="footer"><span>Nova Grid Operations</span><span><a href="/contact/">Contact</a></span></footer>
+  </div>
+</body>
+</html>
+HTML
+
+  cat > "$WEB_ROOT/status/index.html" <<'HTML'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Status | Nova Grid</title>
+  <meta name="description" content="Current service status for Nova Grid operations.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="site-header">
+      <a class="brand" href="/"><span class="mark"></span><span>NOVA GRID</span></a>
+      <nav class="nav"><a href="/about/">Platform</a><a href="/status/">Status</a><a href="/contact/">Contact</a></nav>
+    </header>
+    <main class="section">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">Status</div>
+          <h1>All core systems operational.</h1>
+        </div>
+        <p>Last reviewed during the current operating window.</p>
+      </div>
+      <table class="table">
+        <thead><tr><th>Service</th><th>Region</th><th>State</th></tr></thead>
+        <tbody>
+          <tr><td>Operations Portal</td><td>Asia Pacific</td><td class="ok">Operational</td></tr>
+          <tr><td>Telemetry Ingest</td><td>Asia Pacific</td><td class="ok">Operational</td></tr>
+          <tr><td>Dispatch Reports</td><td>Global</td><td class="ok">Operational</td></tr>
+          <tr><td>Notification Queue</td><td>Global</td><td class="ok">Operational</td></tr>
+        </tbody>
+      </table>
+    </main>
+    <footer class="footer"><span>Nova Grid Operations</span><span><a href="/">Home</a></span></footer>
+  </div>
+</body>
+</html>
+HTML
+
+  cat > "$WEB_ROOT/contact/index.html" <<'HTML'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contact | Nova Grid</title>
+  <meta name="description" content="Contact details for Nova Grid operations.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="site-header">
+      <a class="brand" href="/"><span class="mark"></span><span>NOVA GRID</span></a>
+      <nav class="nav"><a href="/about/">Platform</a><a href="/status/">Status</a><a href="/contact/">Contact</a></nav>
+    </header>
+    <main class="section split">
+      <section>
+        <div class="eyebrow">Contact</div>
+        <h1>Operations support for active portfolios.</h1>
+        <p class="lead">For service requests, planned maintenance, and portfolio updates, contact the regional operations desk.</p>
+      </section>
+      <div class="panel">
+        <div class="status-row"><span class="label">Desk</span><span class="value">APAC Operations</span></div>
+        <div class="status-row"><span class="label">Hours</span><span class="value">24 / 7</span></div>
+        <div class="status-row"><span class="label">Response</span><span class="value">Priority based</span></div>
+        <div class="status-row"><span class="label">Reference</span><span class="value">NOVA-OPS</span></div>
+      </div>
+    </main>
+    <footer class="footer"><span>Nova Grid Operations</span><span><a href="/status/">Service status</a></span></footer>
+  </div>
+</body>
+</html>
+HTML
+
+  cat > "$WEB_ROOT/404.html" <<'HTML'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Page Not Found | Nova Grid</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="site-header">
+      <a class="brand" href="/"><span class="mark"></span><span>NOVA GRID</span></a>
+      <nav class="nav"><a href="/about/">Platform</a><a href="/status/">Status</a><a href="/contact/">Contact</a></nav>
+    </header>
+    <main class="section">
+      <div class="eyebrow">404</div>
+      <h1>Page not found.</h1>
+      <p class="lead">The requested page is not available. Return to the operations overview or check service status.</p>
+      <div class="actions"><a class="button" href="/">Home</a><a class="button secondary" href="/status/">Status</a></div>
+    </main>
   </div>
 </body>
 </html>
@@ -1123,6 +1340,7 @@ server {
     listen [::]:80;
     server_name ${WEB_DOMAIN};
     root ${WEB_ROOT};
+    error_page 404 /404.html;
 
     location ^~ /.well-known/acme-challenge/ {
         root ${WEB_ROOT};
@@ -1139,6 +1357,7 @@ server {
     server_name ${WEB_DOMAIN};
     root ${WEB_ROOT};
     index index.html;
+    error_page 404 /404.html;
 
     ssl_certificate ${le_crt};
     ssl_certificate_key ${le_key};
@@ -1158,8 +1377,14 @@ server {
         return 404;
     }
 
+    location ^~ /assets/ {
+        expires 1h;
+        add_header Cache-Control "public, max-age=3600" always;
+        try_files \$uri =404;
+    }
+
     location / {
-        try_files \$uri \$uri/ /index.html;
+        try_files \$uri \$uri/ =404;
     }
 }
 EOF
@@ -1171,6 +1396,7 @@ server {
     server_name ${WEB_DOMAIN};
     root ${WEB_ROOT};
     index index.html;
+    error_page 404 /404.html;
 
     location ^~ /.well-known/acme-challenge/ {
         root ${WEB_ROOT};
@@ -1189,8 +1415,14 @@ server {
         return 404;
     }
 
+    location ^~ /assets/ {
+        expires 1h;
+        add_header Cache-Control "public, max-age=3600" always;
+        try_files \$uri =404;
+    }
+
     location / {
-        try_files \$uri \$uri/ /index.html;
+        try_files \$uri \$uri/ =404;
     }
 }
 EOF
